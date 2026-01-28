@@ -4,7 +4,7 @@ workflows:
     max_build_duration: 120
     instance_type: mac_mini_m1
     integrations:
-      app_store_connect: RoadCost API  # Укажите название вашей интеграции App Store Connect в CodeMagic
+      app_store_connect: RoadCost API  # Ваша интеграция
     environment:
       ios_signing:
         distribution_type: app_store
@@ -12,28 +12,98 @@ workflows:
       vars:
         BUNDLE_ID: "com.road.cost"
         XCODE_SCHEME: "RoadCost"
-        APP_STORE_APPLE_ID: 6758398062  # Укажите Apple ID вашего приложения в App Store Connect
+        APP_STORE_APPLE_ID: "6758398062"
+        XCODE_PROJECT: "RoadCost.xcodeproj"
       xcode: latest
     scripts:
-      - name: Set up provisioning profiles settings on Xcode project
-        script: xcode-project use-profiles
-      - name: Set initial build number
+      # Шаг 1: Установка зависимостей CocoaPods (если есть)
+      - name: Install CocoaPods dependencies
         script: |
           cd $CM_BUILD_DIR
-          # Для нового приложения устанавливаем начальный build number
+          echo "Проверяем наличие Podfile..."
+          if [ -f "Podfile" ]; then
+            echo "Устанавливаем CocoaPods зависимости..."
+            pod install
+          else
+            echo "Podfile не найден, пропускаем установку CocoaPods"
+          fi
+      
+      # Шаг 2: Настройка подписания кода
+      - name: Set up code signing
+        script: |
+          cd $CM_BUILD_DIR
+          echo "Настраиваем подписание кода..."
+          xcode-project use-profiles
+          
+          # Дополнительная проверка настроек проекта
+          echo "Проверяем настройки проекта..."
+          xcode-project update-project-settings \
+            --bundle-id "$BUNDLE_ID"
+      
+      # Шаг 3: Установка номера сборки
+      - name: Set build number
+        script: |
+          cd $CM_BUILD_DIR
+          echo "Устанавливаем номер сборки..."
+          
+          # Для первого билда используем 1
+          # Если хотите использовать версию из Info.plist, раскомментируйте следующую строку:
+          # agvtool new-version -all $(agvtool what-marketing-version -terse1)
+          
           agvtool new-version -all 1
-      - name: Build ipa for distribution
+          echo "Build number установлен: 1"
+      
+      # Шаг 4: Сборка и архивация
+      - name: Build and archive
         script: |
-          xcode-project build-ipa \
-            --project "RoadCost.xcodeproj" \
+          cd $CM_BUILD_DIR
+          echo "Начинаем сборку проекта..."
+          
+          # Очистка предыдущей сборки
+          echo "Очищаем проект..."
+          xcodebuild clean -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME" || true
+          
+          # Архивация
+          echo "Архивируем проект..."
+          xcode-project archive \
+            --project "$XCODE_PROJECT" \
             --scheme "$XCODE_SCHEME"
-      - name: Upload to App Store Connect (без отправки на ревью)
+      
+      # Шаг 5: Экспорт IPA файла
+      - name: Export IPA
         script: |
-          # Загружаем IPA в App Store Connect
-          echo "Загружаем билд в App Store Connect..."
-          app-store-connect publish \
-            --path "$CM_BUILD_DIR/build/ios/ipa/*.ipa"
+          cd $CM_BUILD_DIR
+          echo "Экспортируем IPA файл..."
+          xcode-project export-ipa \
+            --archive-path "$CM_BUILD_DIR/build/ios/archive/RoadCost.xcarchive" \
+            --method app-store
+      
+      # Шаг 6: Загрузка в App Store Connect
+      - name: Upload to App Store Connect
+        script: |
+          echo "Загружаем IPA в App Store Connect..."
+          
+          # Проверяем наличие IPA файла
+          IPA_PATH=$(find "$CM_BUILD_DIR/build/ios/ipa" -name "*.ipa" | head -1)
+          
+          if [ -f "$IPA_PATH" ]; then
+            echo "Найден IPA файл: $IPA_PATH"
+            echo "Размер файла: $(du -h "$IPA_PATH" | cut -f1)"
+            
+            # Загружаем в App Store Connect
+            app-store-connect publish \
+              --path "$IPA_PATH" \
+              --submit-for-review false
+            
+            echo "✅ IPA успешно загружен в App Store Connect!"
+          else
+            echo "❌ Ошибка: IPA файл не найден!"
+            ls -la "$CM_BUILD_DIR/build/ios/ipa/" || true
+            exit 1
+          fi
+    
+    # Артефакты сборки
     artifacts:
       - build/ios/ipa/*.ipa
-    # Убрана секция publishing, так как не отправляем на модерацию
-    # и не нужны email уведомления
+      - build/ios/archive/*.xcarchive
+      - build/ios/xcodebuild.log
